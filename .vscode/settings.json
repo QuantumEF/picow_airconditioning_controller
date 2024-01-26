@@ -1,0 +1,23 @@
+{
+  "editor.formatOnSave": true,
+  "[toml]": {
+    "editor.formatOnSave": false
+  },
+  "[markdown]": {
+    "editor.formatOnSave": false
+  },
+  "rust-analyzer.check.allTargets": false,
+  "rust-analyzer.check.noDefaultFeatures": true,
+  "rust-analyzer.cargo.noDefaultFeatures": true,
+  "rust-analyzer.showUnlinkedFileNotification": false,
+  "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
+  "rust-analyzer.cargo.features": [
+    "stm32f103c8",
+    "time-driver-any",
+    "unstable-pac",
+    "exti",
+  ],
+  // "rust-analyzer.linkedProjects": [
+  //   "examples/rp/Cargo.toml",
+  // ],
+}
