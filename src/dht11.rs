@@ -40,7 +40,7 @@ impl DHT11 {
         }
     }
 
-    pub fn get_temperature(&mut self) -> i8 {
+    pub fn get_temperature_humidity(&mut self) -> (i8, i8) {
         self.state_machine.set_config(&self.config);
         self.state_machine.set_enable(true);
         // Timer::after_micros(5).await;
@@ -54,6 +54,6 @@ impl DHT11 {
             dht11_data_buf[2], dht11_data_buf[0]
         );
         self.state_machine.restart();
-        dht11_data_buf[2] as i8
+        (dht11_data_buf[2] as i8, dht11_data_buf[0] as i8)
     }
 }

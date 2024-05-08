@@ -549,6 +549,7 @@ dependencies = [
  "fixed-macro",
  "futures",
  "heapless 0.8.0",
+ "itoa",
  "log",
  "panic-probe",
  "pio",
@@ -1046,6 +1047,12 @@ checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
 dependencies = [
  "either",
 ]
+
+[[package]]
+name = "itoa"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 
 [[package]]
 name = "lalrpop"
