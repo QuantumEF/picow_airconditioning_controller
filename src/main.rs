@@ -135,7 +135,7 @@ async fn main(spawner: Spawner) {
     let dht11_ctl = DHT11::new(pio1, p.PIN_15);
     unwrap!(spawner.spawn(temp_controller::temp_controller_task(
         dht11_ctl,
-        24,
+        22,
         p.PIN_13,
         Duration::from_secs(10),
         Duration::from_secs(10)
