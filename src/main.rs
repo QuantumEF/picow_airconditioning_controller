@@ -4,32 +4,40 @@
 #![no_std]
 #![no_main]
 #![allow(async_fn_in_trait)]
-
 use core::str::from_utf8;
 
 use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::tcp::TcpSocket;
-use embassy_net::{Config, Stack, StackResources};
+use embassy_net::{Config as IPConfig, Stack, StackResources};
 use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::clk_sys_freq;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, PIO0, PIO1};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
+
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+mod dht11;
+mod temp_controller;
+use dht11::DHT11;
+
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
+    PIO1_IRQ_0 => InterruptHandler<PIO1>;
 });
 
-const WIFI_NETWORK: &str = "xxxxxxxx";
-const WIFI_PASSWORD: &str = "xxxxxxxx";
+const WIFI_NETWORK: &str = include_str!("wifi_network");
+const WIFI_PASSWORD: &str = include_str!("wifi_password");
 
 #[embassy_executor::task]
-async fn wifi_task(runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>) -> ! {
+async fn wifi_task(
+    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+) -> ! {
     runner.run().await
 }
 
@@ -40,24 +48,34 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("Hello World!");
+    info!("Hello World! {}", clk_sys_freq());
 
     let p = embassy_rp::init(Default::default());
 
-    let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
-    let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
+    // let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
+    // let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
 
     // To make flashing faster for development, you may want to flash the firmwares independently
     // at hardcoded addresses, instead of baking them into the program with `include_bytes!`:
     //     probe-rs download 43439A0.bin --format bin --chip RP2040 --base-address 0x10100000
     //     probe-rs download 43439A0_clm.bin --format bin --chip RP2040 --base-address 0x10140000
-    //let fw = unsafe { core::slice::from_raw_parts(0x10100000 as *const u8, 230321) };
-    //let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
+    let fw = unsafe { core::slice::from_raw_parts(0x10100000 as *const u8, 230321) };
+    let clm = unsafe { core::slice::from_raw_parts(0x10140000 as *const u8, 4752) };
 
     let pwr = Output::new(p.PIN_23, Level::Low);
     let cs = Output::new(p.PIN_25, Level::High);
-    let mut pio = Pio::new(p.PIO0, Irqs);
-    let spi = PioSpi::new(&mut pio.common, pio.sm0, pio.irq0, cs, p.PIN_24, p.PIN_29, p.DMA_CH0);
+    let pio1 = Pio::new(p.PIO1, Irqs);
+
+    let mut pio0 = Pio::new(p.PIO0, Irqs);
+    let spi = PioSpi::new(
+        &mut pio0.common,
+        pio0.sm0,
+        pio0.irq0,
+        cs,
+        p.PIN_24,
+        p.PIN_29,
+        p.DMA_CH0,
+    );
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
@@ -69,7 +87,7 @@ async fn main(spawner: Spawner) {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
-    let config = Config::dhcpv4(Default::default());
+    let config = IPConfig::dhcpv4(Default::default());
     //let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
     //    address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 69, 2), 24),
     //    dns_servers: Vec::new(),
@@ -113,6 +131,15 @@ async fn main(spawner: Spawner) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
+
+    let dht11_ctl = DHT11::new(pio1, p.PIN_15);
+    unwrap!(spawner.spawn(temp_controller::temp_controller_task(
+        dht11_ctl,
+        24,
+        p.PIN_13,
+        Duration::from_secs(10),
+        Duration::from_secs(10)
+    )));
 
     loop {
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
