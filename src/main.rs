@@ -141,10 +141,7 @@ async fn main(spawner: Spawner) {
 
     let mut dht11_ctl = DHT11::new(pio1, p.PIN_15);
 
-    // Need to throw away the first acquisition for whatever reason.
-    Timer::after_secs(1).await;
-    let _ = dht11_ctl.get_temperature_humidity();
-
+    //Note first few values are usually shit :/ need to investigate.
     Timer::after_secs(1).await;
     let (initial_temperature, initial_humidity) = dht11_ctl.get_temperature_humidity();
 
