@@ -11,12 +11,12 @@
   "rust-analyzer.cargo.noDefaultFeatures": true,
   "rust-analyzer.showUnlinkedFileNotification": false,
   "rust-analyzer.cargo.target": "thumbv6m-none-eabi",
-  "rust-analyzer.cargo.features": [
-    "stm32f103c8",
-    "time-driver-any",
-    "unstable-pac",
-    "exti",
-  ],
+  // "rust-analyzer.cargo.features": [
+  //   "stm32f103c8",
+  //   "time-driver-any",
+  //   "unstable-pac",
+  //   "exti",
+  // ],
   // "rust-analyzer.linkedProjects": [
   //   "examples/rp/Cargo.toml",
   // ],

@@ -1,10 +1,14 @@
 use defmt::*;
 use embassy_rp::gpio::{Level, Output, Pin};
 use embassy_time::{Duration, Instant, Timer};
+use portable_atomic::Ordering;
+
+use core::sync::atomic::AtomicI8;
 
 use crate::dht11::DHT11;
 
-pub static mut SHARED_TEMP_HUMID: (i32, i32) = (0, 0);
+pub static SHARED_TEMP: AtomicI8 = AtomicI8::new(0);
+pub static SHARED_HUMID: AtomicI8 = AtomicI8::new(0);
 
 #[derive(PartialEq, Format)]
 enum ControllerState {
@@ -20,7 +24,6 @@ pub async fn temp_controller_task(
     relay_pin: impl Pin,
     minimum_runtime: Duration,
     cooldown_time: Duration,
-    // mut _shared_temp_var: (i32, i32),
 ) -> ! {
     let mut machine_state = ControllerState::Idle;
     let mut runtime_start = Instant::from_secs(0);
@@ -32,7 +35,8 @@ pub async fn temp_controller_task(
         let (temperature, humidity) = dht11_ctl.get_temperature_humidity();
         let current_time = Instant::now();
 
-        unsafe { SHARED_TEMP_HUMID = (temperature as i32, humidity as i32) };
+        SHARED_TEMP.store(temperature, Ordering::Relaxed);
+        SHARED_HUMID.store(humidity, Ordering::Relaxed);
 
         info!(
             "Machine State: {}, Time: {}, Temp: {}",

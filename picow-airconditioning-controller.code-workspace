@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../dht11-test"
+		}
+	],
+	"settings": {
+		"rust-analyzer.check.allTargets": false,
+		"rust-analyzer.check.noDefaultFeatures": true,
+		"rust-analyzer.cargo.noDefaultFeatures": true,
+		"rust-analyzer.showUnlinkedFileNotification": false,
+		"rust-analyzer.cargo.target": "thumbv6m-none-eabi"
+	}
+}

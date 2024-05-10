@@ -27,7 +27,7 @@ use {defmt_rtt as _, panic_probe as _};
 mod dht11;
 mod temp_controller;
 use dht11::DHT11;
-use temp_controller::SHARED_TEMP_HUMID;
+use temp_controller::{SHARED_HUMID, SHARED_TEMP};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -134,16 +134,22 @@ async fn main(spawner: Spawner) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
-    let mut write_buf = [0u8; 64];
+
+    let mut output_string = String::<64>::new();
+    let mut temperature_buffer = itoa::Buffer::new();
+    let mut humidity_buffer = itoa::Buffer::new();
 
     let mut dht11_ctl = DHT11::new(pio1, p.PIN_15);
+
+    // Need to throw away the first acquisition for whatever reason.
+    Timer::after_secs(1).await;
+    let _ = dht11_ctl.get_temperature_humidity();
 
     Timer::after_secs(1).await;
     let (initial_temperature, initial_humidity) = dht11_ctl.get_temperature_humidity();
 
-    unsafe {
-        SHARED_TEMP_HUMID = (initial_temperature as i32, initial_humidity as i32);
-    };
+    SHARED_TEMP.store(initial_temperature, Ordering::Relaxed);
+    SHARED_HUMID.store(initial_humidity, Ordering::Relaxed);
 
     unwrap!(spawner.spawn(temp_controller::temp_controller_task(
         dht11_ctl,
@@ -180,15 +186,11 @@ async fn main(spawner: Spawner) {
                 }
             };
 
-            // info!("rxd {}", from_utf8(&buf[..n]).unwrap());
-            info!("EFONG");
-
-            let (temperature, humidity) = unsafe { SHARED_TEMP_HUMID };
-            let mut output_string = String::<64>::new();
-            let mut temperature_buffer = itoa::Buffer::new();
-            let mut humidity_buffer = itoa::Buffer::new();
+            let temperature = SHARED_TEMP.load(Ordering::Relaxed);
+            let humidity = SHARED_HUMID.load(Ordering::Relaxed);
             let temperature_str = temperature_buffer.format(temperature);
             let humidity_str = humidity_buffer.format(humidity);
+            output_string.clear();
             let _ = output_string.push_str(temperature_str);
             let _ = output_string.push(',');
             let _ = output_string.push_str(humidity_str);
