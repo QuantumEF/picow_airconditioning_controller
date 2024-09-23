@@ -50,6 +50,11 @@ pio-proc = "0.2"
 pio = "0.2.1"
 rand = { version = "0.8.5", default-features = false }
 itoa = "1.0.11"
+embedded-cli = "0.2.1"
+embedded-io = "0.6.1"
+ufmt = "0.2.0"
+nb = "1.1.0"
+embassy-net-driver-channel = "0.3.0"
 
 [profile.release]
 debug = 2

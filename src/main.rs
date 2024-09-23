@@ -4,8 +4,7 @@
 #![no_std]
 #![no_main]
 #![allow(async_fn_in_trait)]
-use core::str::from_utf8;
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::Ordering;
 use heapless::String;
 
 use cyw43_pio::PioSpi;
@@ -13,11 +12,14 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config as IPConfig, Stack, StackResources};
-use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::clk_sys_freq;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0, PIO1};
-use embassy_rp::pio::{InterruptHandler, Pio};
+use embassy_rp::peripherals::{DMA_CH0, PIO0, PIO1, UART0};
+use embassy_rp::pio::{InterruptHandler as PIOInterruptHandler, Pio};
+use embassy_rp::{
+    bind_interrupts,
+    uart::{self, InterruptHandler as UARTInterruptHandler},
+};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 
@@ -28,10 +30,16 @@ mod dht11;
 mod temp_controller;
 use dht11::DHT11;
 use temp_controller::{SHARED_HUMID, SHARED_TEMP};
+mod uart_cli;
+use uart_cli::uart_cli;
 
-bind_interrupts!(struct Irqs {
-    PIO0_IRQ_0 => InterruptHandler<PIO0>;
-    PIO1_IRQ_0 => InterruptHandler<PIO1>;
+bind_interrupts!(struct PIOIrqs {
+    PIO0_IRQ_0 => PIOInterruptHandler<PIO0>;
+    PIO1_IRQ_0 => PIOInterruptHandler<PIO1>;
+});
+
+bind_interrupts!(struct UARTIrqs {
+    UART0_IRQ  => UARTInterruptHandler<UART0>;
 });
 
 const WIFI_NETWORK: &str = include_str!("wifi_network");
@@ -55,6 +63,11 @@ async fn main(spawner: Spawner) {
 
     let p = embassy_rp::init(Default::default());
 
+    let config = uart::Config::default();
+    let uart = uart::Uart::new(
+        p.UART0, p.PIN_0, p.PIN_1, UARTIrqs, p.DMA_CH1, p.DMA_CH2, config,
+    );
+
     // let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
     // let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
 
@@ -67,9 +80,9 @@ async fn main(spawner: Spawner) {
 
     let pwr = Output::new(p.PIN_23, Level::Low);
     let cs = Output::new(p.PIN_25, Level::High);
-    let pio1 = Pio::new(p.PIO1, Irqs);
+    let pio1 = Pio::new(p.PIO1, PIOIrqs);
 
-    let mut pio0 = Pio::new(p.PIO0, Irqs);
+    let mut pio0 = Pio::new(p.PIO0, PIOIrqs);
     let spi = PioSpi::new(
         &mut pio0.common,
         pio0.sm0,
@@ -129,6 +142,8 @@ async fn main(spawner: Spawner) {
     }
     info!("DHCP is now up!");
 
+    unwrap!(spawner.spawn(uart_cli(uart, stack)));
+
     // And now we can use it!
 
     let mut rx_buffer = [0; 4096];
@@ -171,7 +186,7 @@ async fn main(spawner: Spawner) {
         control.gpio_set(0, true).await;
 
         loop {
-            let n = match socket.read(&mut buf).await {
+            let _ = match socket.read(&mut buf).await {
                 Ok(0) => {
                     warn!("read EOF");
                     break;
