@@ -1,4 +1,4 @@
-use core::fmt::Write;
+use core::{fmt::Write, sync::atomic::Ordering};
 use cyw43::NetDriver;
 use embassy_net::Stack;
 use embassy_rp::{
@@ -10,6 +10,8 @@ use embedded_cli::{
     Command,
 };
 use embedded_io::ErrorType;
+
+use crate::temp_controller::{SHARED_HUMID, SHARED_TEMP};
 
 #[derive(Debug, Command)]
 enum BaseCommand {
@@ -67,7 +69,16 @@ pub async fn uart_cli(
                 byte,
                 &mut BaseCommand::processor(
                     |cli: &mut CliHandle<'_, Writer, uart::Error>, command| match command {
-                        BaseCommand::Temp => Ok(()),
+                        BaseCommand::Temp => {
+                            write!(
+                                cli.writer(),
+                                "Temp: {}°C\nHumidity: {}%",
+                                SHARED_TEMP.load(Ordering::Relaxed),
+                                SHARED_HUMID.load(Ordering::Relaxed)
+                            )
+                            .unwrap();
+                            Ok(())
+                        }
                         BaseCommand::Status => {
                             let addr = network_stack.config_v4().map(|x| x.address);
                             write!(cli.writer(), "{:?}", addr).unwrap();

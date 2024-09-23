@@ -142,8 +142,6 @@ async fn main(spawner: Spawner) {
     }
     info!("DHCP is now up!");
 
-    unwrap!(spawner.spawn(uart_cli(uart, stack)));
-
     // And now we can use it!
 
     let mut rx_buffer = [0; 4096];
@@ -155,6 +153,8 @@ async fn main(spawner: Spawner) {
     let mut humidity_buffer = itoa::Buffer::new();
 
     let mut dht11_ctl = DHT11::new(pio1, p.PIN_15);
+
+    unwrap!(spawner.spawn(uart_cli(uart, stack)));
 
     //Note first few values are usually shit :/ need to investigate.
     Timer::after_secs(1).await;
