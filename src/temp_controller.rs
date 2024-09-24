@@ -10,11 +10,24 @@ use crate::dht11::DHT11;
 pub static SHARED_TEMP: AtomicI8 = AtomicI8::new(0);
 pub static SHARED_HUMID: AtomicI8 = AtomicI8::new(0);
 
-#[derive(PartialEq, Format)]
+#[derive(PartialEq, Format, Clone, Copy)]
 enum ControllerState {
     Idle,
     Running,
     Cooldown,
+}
+
+impl ControllerState {
+    fn is_running(self) -> bool {
+        self == Self::Running
+    }
+
+    fn is_idle(self) -> bool {
+        self == Self::Idle
+    }
+    fn is_cooldown(self) -> bool {
+        self == Self::Cooldown
+    }
 }
 
 #[embassy_executor::task]
@@ -43,17 +56,15 @@ pub async fn temp_controller_task(
             machine_state, current_time, temperature
         );
 
-        if (machine_state == ControllerState::Idle) && (temperature > threshold_temperature) {
+        if machine_state.is_idle() && (temperature > threshold_temperature) {
             machine_state = ControllerState::Running;
             runtime_start = Instant::now();
             relay_output.set_high();
-        } else if (machine_state == ControllerState::Running)
-            && (current_time > (runtime_start + minimum_runtime))
-        {
+        } else if machine_state.is_running() && (current_time > (runtime_start + minimum_runtime)) {
             machine_state = ControllerState::Cooldown;
             cooldown_starttime = Instant::now();
             relay_output.set_low();
-        } else if (machine_state == ControllerState::Cooldown)
+        } else if machine_state.is_cooldown()
             && (current_time > (cooldown_starttime + cooldown_time))
         {
             machine_state = ControllerState::Idle;
