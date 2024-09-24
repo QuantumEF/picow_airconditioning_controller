@@ -123,6 +123,8 @@ async fn main(spawner: Spawner) {
         seed,
     ));
 
+    unwrap!(spawner.spawn(uart_cli(uart, stack)));
+
     unwrap!(spawner.spawn(net_task(stack)));
 
     loop {
@@ -153,8 +155,6 @@ async fn main(spawner: Spawner) {
     let mut humidity_buffer = itoa::Buffer::new();
 
     let mut dht11_ctl = DHT11::new(pio1, p.PIN_15);
-
-    unwrap!(spawner.spawn(uart_cli(uart, stack)));
 
     //Note first few values are usually shit :/ need to investigate.
     Timer::after_secs(1).await;

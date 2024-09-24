@@ -1,5 +1,6 @@
 use core::{fmt::Write, sync::atomic::Ordering};
 use cyw43::NetDriver;
+use defmt::error;
 use embassy_net::Stack;
 use embassy_rp::{
     peripherals::UART0,
@@ -16,7 +17,7 @@ use crate::temp_controller::{SHARED_HUMID, SHARED_TEMP};
 #[derive(Debug, Command)]
 enum BaseCommand {
     Temp,
-    Status,
+    Addr,
 }
 
 /// Wrapper around usart so we can impl embedded_io::Write
@@ -63,30 +64,38 @@ pub async fn uart_cli(
 
     loop {
         let mut buffer = [0; 1];
-        rx.read(&mut buffer).await.unwrap();
-        for byte in buffer {
-            let _ = cli.process_byte::<BaseCommand, _>(
-                byte,
-                &mut BaseCommand::processor(
-                    |cli: &mut CliHandle<'_, Writer, uart::Error>, command| match command {
-                        BaseCommand::Temp => {
-                            write!(
-                                cli.writer(),
-                                "Temp: {}°C\nHumidity: {}%",
-                                SHARED_TEMP.load(Ordering::Relaxed),
-                                SHARED_HUMID.load(Ordering::Relaxed)
-                            )
-                            .unwrap();
-                            Ok(())
-                        }
-                        BaseCommand::Status => {
-                            let addr = network_stack.config_v4().map(|x| x.address);
-                            write!(cli.writer(), "{:?}", addr).unwrap();
-                            Ok(())
-                        }
-                    },
-                ),
-            );
+        match rx.read(&mut buffer).await {
+            Ok(()) => {
+                for byte in buffer {
+                    let _ = cli.process_byte::<BaseCommand, _>(
+                        byte,
+                        &mut BaseCommand::processor(
+                            |cli: &mut CliHandle<'_, Writer, uart::Error>, command| match command {
+                                BaseCommand::Temp => {
+                                    write!(
+                                        cli.writer(),
+                                        "Temp: {}°C\nHumidity: {}%",
+                                        SHARED_TEMP.load(Ordering::Relaxed),
+                                        SHARED_HUMID.load(Ordering::Relaxed)
+                                    )
+                                    .unwrap();
+                                    Ok(())
+                                }
+                                BaseCommand::Addr => {
+                                    match network_stack.config_v4().map(|x| x.address) {
+                                        Some(addr) => write!(cli.writer(), "{}", addr).unwrap(),
+                                        None => {
+                                            write!(cli.writer(), "No Address Assigned").unwrap()
+                                        }
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        ),
+                    );
+                }
+            }
+            Err(err) => error!("UART Error: {:?}", err),
         }
     }
 }
