@@ -13,20 +13,81 @@ pub static SHARED_HUMID: AtomicI8 = AtomicI8::new(0);
 #[derive(PartialEq, Format, Clone, Copy)]
 enum ControllerState {
     Idle,
-    Running,
-    Cooldown,
+    Running { starttime: Instant },
+    Cooldown { starttime: Instant },
 }
 
-impl ControllerState {
-    fn is_running(self) -> bool {
-        self == Self::Running
+struct TempController {
+    state: ControllerState,
+    threshold_temperature: i8,
+    minimum_runtime: Duration,
+    cooldown_time: Duration,
+}
+
+impl TempController {
+    /// Creates a new temperature controller, starts off in Cooldown mode
+    fn new(
+        threshold_temperature: i8,
+        minimum_runtime: Duration,
+        cooldown_time: Duration,
+    ) -> TempController {
+        TempController {
+            state: ControllerState::Cooldown {
+                starttime: Instant::now(),
+            },
+            threshold_temperature,
+            minimum_runtime,
+            cooldown_time,
+        }
     }
 
-    fn is_idle(self) -> bool {
-        self == Self::Idle
+    fn update(&mut self, current_temperature: i8) -> bool {
+        let current_time = Instant::now();
+
+        info!("Machine State: {}", self.state);
+
+        match self.state {
+            ControllerState::Idle => {
+                if current_temperature > self.threshold_temperature {
+                    self.state = ControllerState::Running {
+                        starttime: Instant::now(),
+                    };
+                    true
+                } else {
+                    false
+                }
+            }
+            ControllerState::Running { starttime } => {
+                if current_time > (starttime + self.minimum_runtime) {
+                    self.state = ControllerState::Cooldown {
+                        starttime: Instant::now(),
+                    };
+                    true
+                } else {
+                    false
+                }
+            }
+            ControllerState::Cooldown { starttime } => {
+                if current_time > (starttime + self.cooldown_time) {
+                    self.state = ControllerState::Idle;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
     }
-    fn is_cooldown(self) -> bool {
-        self == Self::Cooldown
+
+    fn is_running(&self) -> bool {
+        matches!(self.state, ControllerState::Running { starttime: _ })
+    }
+
+    fn _is_idle(&self) -> bool {
+        self.state == ControllerState::Idle
+    }
+
+    pub fn is_cooldown(&self) -> bool {
+        matches!(self.state, ControllerState::Cooldown { starttime: _ })
     }
 }
 
@@ -38,37 +99,24 @@ pub async fn temp_controller_task(
     minimum_runtime: Duration,
     cooldown_time: Duration,
 ) -> ! {
-    let mut machine_state = ControllerState::Idle;
-    let mut runtime_start = Instant::from_secs(0);
-    let mut cooldown_starttime = Instant::from_secs(0);
-
+    let mut controller = TempController::new(threshold_temperature, minimum_runtime, cooldown_time);
     let mut relay_output = Output::new(relay_pin, Level::Low);
 
     loop {
         let (temperature, humidity) = dht11_ctl.get_temperature_humidity();
-        let current_time = Instant::now();
 
         SHARED_TEMP.store(temperature, Ordering::Relaxed);
         SHARED_HUMID.store(humidity, Ordering::Relaxed);
 
-        info!(
-            "Machine State: {}, Time: {}, Temp: {}",
-            machine_state, current_time, temperature
-        );
-
-        if machine_state.is_idle() && (temperature > threshold_temperature) {
-            machine_state = ControllerState::Running;
-            runtime_start = Instant::now();
+        let controller_state_change = controller.update(temperature);
+        if controller_state_change && controller.is_running() {
+            debug!("Setting Controller Relay");
             relay_output.set_high();
-        } else if machine_state.is_running() && (current_time > (runtime_start + minimum_runtime)) {
-            machine_state = ControllerState::Cooldown;
-            cooldown_starttime = Instant::now();
+        } else if controller_state_change && controller.is_cooldown() {
+            debug!("Unsetting Controller Relay");
             relay_output.set_low();
-        } else if machine_state.is_cooldown()
-            && (current_time > (cooldown_starttime + cooldown_time))
-        {
-            machine_state = ControllerState::Idle;
         }
+
         Timer::after_secs(1).await
     }
 }
