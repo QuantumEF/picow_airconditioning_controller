@@ -571,6 +571,7 @@ dependencies = [
  "embassy-net",
  "embassy-net-driver-channel 0.3.0",
  "embassy-rp",
+ "embassy-sync 0.6.0",
  "embassy-time",
  "embedded-cli",
  "embedded-graphics",

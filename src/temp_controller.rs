@@ -1,23 +1,23 @@
+use crate::dht11::DHT11;
+use core::sync::atomic::AtomicI8;
 use defmt::*;
 use embassy_rp::gpio::{Level, Output, Pin};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Timer};
 use portable_atomic::Ordering;
-
-use core::sync::atomic::AtomicI8;
-
-use crate::dht11::DHT11;
 
 pub static SHARED_TEMP: AtomicI8 = AtomicI8::new(0);
 pub static SHARED_HUMID: AtomicI8 = AtomicI8::new(0);
 
-#[derive(PartialEq, Format, Clone, Copy)]
-enum ControllerState {
+#[derive(Debug, PartialEq, Format, Clone, Copy)]
+pub enum ControllerState {
     Idle,
     Running { starttime: Instant },
     Cooldown { starttime: Instant },
 }
 
-struct TempController {
+#[derive(Debug, Clone, Copy)]
+pub struct TempController {
     state: ControllerState,
     threshold_temperature: i8,
     minimum_runtime: Duration,
@@ -26,7 +26,7 @@ struct TempController {
 
 impl TempController {
     /// Creates a new temperature controller, starts off in Cooldown mode
-    fn new(
+    pub fn new(
         threshold_temperature: i8,
         minimum_runtime: Duration,
         cooldown_time: Duration,
@@ -41,10 +41,8 @@ impl TempController {
         }
     }
 
-    fn update(&mut self, current_temperature: i8) -> bool {
+    pub fn update(&mut self, current_temperature: i8) -> bool {
         let current_time = Instant::now();
-
-        info!("Machine State: {}", self.state);
 
         match self.state {
             ControllerState::Idle => {
@@ -78,28 +76,29 @@ impl TempController {
         }
     }
 
-    fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         matches!(self.state, ControllerState::Running { starttime: _ })
     }
 
-    fn _is_idle(&self) -> bool {
+    pub fn _is_idle(&self) -> bool {
         self.state == ControllerState::Idle
     }
 
     pub fn is_cooldown(&self) -> bool {
         matches!(self.state, ControllerState::Cooldown { starttime: _ })
     }
+
+    pub fn get_state(&self) -> ControllerState {
+        self.state
+    }
 }
 
 #[embassy_executor::task]
 pub async fn temp_controller_task(
     mut dht11_ctl: DHT11,
-    threshold_temperature: i8,
+    controller: Mutex<NoopRawMutex, TempController>,
     relay_pin: impl Pin,
-    minimum_runtime: Duration,
-    cooldown_time: Duration,
 ) -> ! {
-    let mut controller = TempController::new(threshold_temperature, minimum_runtime, cooldown_time);
     let mut relay_output = Output::new(relay_pin, Level::Low);
 
     loop {
@@ -108,6 +107,7 @@ pub async fn temp_controller_task(
         SHARED_TEMP.store(temperature, Ordering::Relaxed);
         SHARED_HUMID.store(humidity, Ordering::Relaxed);
 
+        let mut controller = controller.lock().await;
         let controller_state_change = controller.update(temperature);
         if controller_state_change && controller.is_running() {
             debug!("Setting Controller Relay");

@@ -5,6 +5,8 @@
 #![no_main]
 #![allow(async_fn_in_trait)]
 use core::sync::atomic::Ordering;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::mutex::Mutex;
 use heapless::String;
 
 use cyw43_pio::PioSpi;
@@ -29,7 +31,7 @@ use {defmt_rtt as _, panic_probe as _};
 mod dht11;
 mod temp_controller;
 use dht11::DHT11;
-use temp_controller::{SHARED_HUMID, SHARED_TEMP};
+use temp_controller::{ControllerState, TempController, SHARED_HUMID, SHARED_TEMP};
 mod uart_cli;
 use uart_cli::uart_cli;
 
@@ -55,6 +57,11 @@ async fn wifi_task(
 #[embassy_executor::task]
 async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
+}
+
+async fn test(x: Mutex<NoopRawMutex, TempController>) {
+    let y = x.lock().await;
+    info!("MS: {:?}", y.get_state())
 }
 
 #[embassy_executor::main]
@@ -163,12 +170,14 @@ async fn main(spawner: Spawner) {
     SHARED_TEMP.store(initial_temperature, Ordering::Relaxed);
     SHARED_HUMID.store(initial_humidity, Ordering::Relaxed);
 
-    unwrap!(spawner.spawn(temp_controller::temp_controller_task(
-        dht11_ctl,
+    let controller = Mutex::<NoopRawMutex, _>::new(TempController::new(
         22,
-        p.PIN_13,
         Duration::from_secs(10),
         Duration::from_secs(10),
+    ));
+
+    unwrap!(spawner.spawn(temp_controller::temp_controller_task(
+        dht11_ctl, controller, p.PIN_13,
     )));
 
     loop {
