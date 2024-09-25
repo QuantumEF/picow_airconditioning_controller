@@ -1,23 +1,25 @@
 use core::{fmt::Write, sync::atomic::Ordering};
 use cyw43::NetDriver;
-use defmt::error;
+use defmt::{debug, error};
 use embassy_net::Stack;
 use embassy_rp::{
     peripherals::UART0,
     uart::{self, Async, Uart, UartTx},
 };
+use embassy_time::Instant;
 use embedded_cli::{
     cli::{CliBuilder, CliHandle},
     Command,
 };
 use embedded_io::ErrorType;
 
-use crate::temp_controller::{SHARED_HUMID, SHARED_TEMP};
+use crate::temp_controller::{ControllerState, TempController, SHARED_HUMID, SHARED_TEMP};
 
 #[derive(Debug, Command)]
 enum BaseCommand {
     Temp,
     Addr,
+    Status,
 }
 
 /// Wrapper around usart so we can impl embedded_io::Write
@@ -44,6 +46,7 @@ impl embedded_io::Write for Writer {
 pub async fn uart_cli(
     uart: Uart<'static, UART0, Async>,
     network_stack: &'static Stack<NetDriver<'static>>,
+    controller: *mut TempController,
 ) -> ! {
     let (command_buffer, history_buffer) = unsafe {
         static mut COMMAND_BUFFER: [u8; 32] = [0; 32];
@@ -61,6 +64,13 @@ pub async fn uart_cli(
         .build()
         .ok()
         .unwrap();
+
+    // Safety: I don't care about race conditions.
+    let controller = unsafe {
+        controller
+            .as_mut()
+            .expect("This pointer should be initialized")
+    };
 
     loop {
         let mut buffer = [0; 1];
@@ -90,6 +100,34 @@ pub async fn uart_cli(
                                     }
                                     Ok(())
                                 }
+                                BaseCommand::Status => {
+                                    match controller.get_state() {
+                                        ControllerState::Idle => {
+                                            write!(cli.writer(), "Status: Idle",).unwrap()
+                                        }
+                                        ControllerState::Running { starttime } => {
+                                            let time_remaining = controller.minimum_runtime
+                                                - (Instant::now() - starttime);
+                                            write!(
+                                                cli.writer(),
+                                                "Status: Running - Remaining: {}s",
+                                                time_remaining.as_secs()
+                                            )
+                                            .unwrap()
+                                        }
+                                        ControllerState::Cooldown { starttime } => {
+                                            let time_remaining = controller.cooldown_time
+                                                - (Instant::now() - starttime);
+                                            write!(
+                                                cli.writer(),
+                                                "Status: Cooldown - Remaining: {}s",
+                                                time_remaining.as_secs()
+                                            )
+                                            .unwrap()
+                                        }
+                                    }
+                                    Ok(())
+                                }
                             },
                         ),
                     );
@@ -97,5 +135,6 @@ pub async fn uart_cli(
             }
             Err(err) => error!("UART Error: {:?}", err),
         }
+        debug!("Byte: {}", buffer);
     }
 }

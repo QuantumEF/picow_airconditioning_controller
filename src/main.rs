@@ -5,8 +5,6 @@
 #![no_main]
 #![allow(async_fn_in_trait)]
 use core::sync::atomic::Ordering;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::mutex::Mutex;
 use heapless::String;
 
 use cyw43_pio::PioSpi;
@@ -31,7 +29,7 @@ use {defmt_rtt as _, panic_probe as _};
 mod dht11;
 mod temp_controller;
 use dht11::DHT11;
-use temp_controller::{ControllerState, TempController, SHARED_HUMID, SHARED_TEMP};
+use temp_controller::{TempController, SHARED_HUMID, SHARED_TEMP};
 mod uart_cli;
 use uart_cli::uart_cli;
 
@@ -43,6 +41,8 @@ bind_interrupts!(struct PIOIrqs {
 bind_interrupts!(struct UARTIrqs {
     UART0_IRQ  => UARTInterruptHandler<UART0>;
 });
+
+static CONTROLLER: StaticCell<TempController> = StaticCell::new();
 
 const WIFI_NETWORK: &str = include_str!("wifi_network");
 const WIFI_PASSWORD: &str = include_str!("wifi_password");
@@ -59,16 +59,21 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
 }
 
-async fn test(x: Mutex<NoopRawMutex, TempController>) {
-    let y = x.lock().await;
-    info!("MS: {:?}", y.get_state())
-}
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("Hello World! {}", clk_sys_freq());
 
     let p = embassy_rp::init(Default::default());
+
+    let controller: &'static mut TempController = CONTROLLER.init(TempController::new(
+        22,
+        Duration::from_secs(10),
+        Duration::from_secs(10),
+    ));
+
+    // Safety: I don't care about race conditions.
+    let test1 = controller as *mut TempController;
+    let test2 = controller as *mut TempController;
 
     let config = uart::Config::default();
     let uart = uart::Uart::new(
@@ -130,7 +135,7 @@ async fn main(spawner: Spawner) {
         seed,
     ));
 
-    unwrap!(spawner.spawn(uart_cli(uart, stack)));
+    unwrap!(spawner.spawn(uart_cli(uart, stack, test1)));
 
     unwrap!(spawner.spawn(net_task(stack)));
 
@@ -170,14 +175,8 @@ async fn main(spawner: Spawner) {
     SHARED_TEMP.store(initial_temperature, Ordering::Relaxed);
     SHARED_HUMID.store(initial_humidity, Ordering::Relaxed);
 
-    let controller = Mutex::<NoopRawMutex, _>::new(TempController::new(
-        22,
-        Duration::from_secs(10),
-        Duration::from_secs(10),
-    ));
-
     unwrap!(spawner.spawn(temp_controller::temp_controller_task(
-        dht11_ctl, controller, p.PIN_13,
+        dht11_ctl, test2, p.PIN_13,
     )));
 
     loop {

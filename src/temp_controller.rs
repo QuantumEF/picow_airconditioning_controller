@@ -2,7 +2,6 @@ use crate::dht11::DHT11;
 use core::sync::atomic::AtomicI8;
 use defmt::*;
 use embassy_rp::gpio::{Level, Output, Pin};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Timer};
 use portable_atomic::Ordering;
 
@@ -20,8 +19,8 @@ pub enum ControllerState {
 pub struct TempController {
     state: ControllerState,
     threshold_temperature: i8,
-    minimum_runtime: Duration,
-    cooldown_time: Duration,
+    pub minimum_runtime: Duration,
+    pub cooldown_time: Duration,
 }
 
 impl TempController {
@@ -96,10 +95,17 @@ impl TempController {
 #[embassy_executor::task]
 pub async fn temp_controller_task(
     mut dht11_ctl: DHT11,
-    controller: Mutex<NoopRawMutex, TempController>,
+    controller: *mut TempController,
     relay_pin: impl Pin,
 ) -> ! {
     let mut relay_output = Output::new(relay_pin, Level::Low);
+
+    // Safety: I don't care about race conditions.
+    let controller = unsafe {
+        controller
+            .as_mut()
+            .expect("This pointer should be initialized")
+    };
 
     loop {
         let (temperature, humidity) = dht11_ctl.get_temperature_humidity();
@@ -107,7 +113,6 @@ pub async fn temp_controller_task(
         SHARED_TEMP.store(temperature, Ordering::Relaxed);
         SHARED_HUMID.store(humidity, Ordering::Relaxed);
 
-        let mut controller = controller.lock().await;
         let controller_state_change = controller.update(temperature);
         if controller_state_change && controller.is_running() {
             debug!("Setting Controller Relay");
