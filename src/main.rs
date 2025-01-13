@@ -5,6 +5,8 @@
 #![no_main]
 #![allow(async_fn_in_trait)]
 use core::sync::atomic::Ordering;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::watch::Watch;
 use heapless::String;
 
 use cyw43_pio::PioSpi;
@@ -13,7 +15,7 @@ use embassy_executor::Spawner;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{Config as IPConfig, Stack, StackResources};
 use embassy_rp::clocks::clk_sys_freq;
-use embassy_rp::gpio::{Level, Output};
+use embassy_rp::gpio::{Level, Output, Pin};
 use embassy_rp::peripherals::{DMA_CH0, PIO0, PIO1, UART0};
 use embassy_rp::pio::{InterruptHandler as PIOInterruptHandler, Pio};
 use embassy_rp::{
@@ -29,9 +31,9 @@ use {defmt_rtt as _, panic_probe as _};
 mod dht11;
 mod temp_controller;
 use dht11::DHT11;
-use temp_controller::{TempController, SHARED_HUMID, SHARED_TEMP};
-mod uart_cli;
-use uart_cli::uart_cli;
+use temp_controller::TempController;
+// mod uart_cli;
+// use uart_cli::uart_cli;
 
 bind_interrupts!(struct PIOIrqs {
     PIO0_IRQ_0 => PIOInterruptHandler<PIO0>;
@@ -42,10 +44,10 @@ bind_interrupts!(struct UARTIrqs {
     UART0_IRQ  => UARTInterruptHandler<UART0>;
 });
 
-static CONTROLLER: StaticCell<TempController> = StaticCell::new();
-
 const WIFI_NETWORK: &str = include_str!("wifi_network");
 const WIFI_PASSWORD: &str = include_str!("wifi_password");
+
+static DHT11_WATCH: Watch<CriticalSectionRawMutex, (i8, i8), 4> = Watch::new();
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -59,21 +61,50 @@ async fn net_task(stack: &'static Stack<cyw43::NetDriver<'static>>) -> ! {
     stack.run().await
 }
 
+#[embassy_executor::task]
+async fn temp_monitor_task(mut dht11_ctl: DHT11) {
+    let dht11_monitor = DHT11_WATCH.sender();
+
+    // Since I think the first few readings are garbage, let's just throw them away
+    let _ = dht11_ctl.get_temperature_humidity();
+    Timer::after_secs(1).await;
+    let _ = dht11_ctl.get_temperature_humidity();
+
+    loop {
+        Timer::after_secs(1).await;
+        let temp_humid = dht11_ctl.get_temperature_humidity();
+
+        dht11_monitor.send(temp_humid);
+    }
+}
+
+#[embassy_executor::task]
+async fn temp_controller(relay_pin: impl Pin) {
+    let mut dht11_controller_reciever = DHT11_WATCH.receiver().unwrap();
+
+    let mut controller = TempController::new(
+        temp_controller::TempControllerConfig {
+            threshold_temperature: 20,
+            minimum_runtime: Duration::from_secs(10),
+            cooldown_time: Duration::from_secs(10),
+        },
+        Output::new(relay_pin, Level::Low),
+    );
+
+    loop {
+        let (temperature, _) = dht11_controller_reciever.get().await;
+        controller.update(temperature);
+        Timer::after_secs(1).await;
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     info!("Hello World! {}", clk_sys_freq());
 
     let p = embassy_rp::init(Default::default());
 
-    let controller: &'static mut TempController = CONTROLLER.init(TempController::new(
-        22,
-        Duration::from_secs(10),
-        Duration::from_secs(10),
-    ));
-
-    // Safety: I don't care about race conditions.
-    let test1 = controller as *mut TempController;
-    let test2 = controller as *mut TempController;
+    let mut dht11_tcp_reciever = DHT11_WATCH.receiver().unwrap();
 
     let config = uart::Config::default();
     let uart = uart::Uart::new(
@@ -135,7 +166,7 @@ async fn main(spawner: Spawner) {
         seed,
     ));
 
-    unwrap!(spawner.spawn(uart_cli(uart, stack, test1)));
+    // unwrap!(spawner.spawn(uart_cli(uart, stack, test1)));
 
     unwrap!(spawner.spawn(net_task(stack)));
 
@@ -166,18 +197,11 @@ async fn main(spawner: Spawner) {
     let mut temperature_buffer = itoa::Buffer::new();
     let mut humidity_buffer = itoa::Buffer::new();
 
-    let mut dht11_ctl = DHT11::new(pio1, p.PIN_15);
+    unwrap!(spawner.spawn(temp_controller(p.PIN_13)));
 
-    //Note first few values are usually shit :/ need to investigate.
-    Timer::after_secs(1).await;
-    let (initial_temperature, initial_humidity) = dht11_ctl.get_temperature_humidity();
-
-    SHARED_TEMP.store(initial_temperature, Ordering::Relaxed);
-    SHARED_HUMID.store(initial_humidity, Ordering::Relaxed);
-
-    unwrap!(spawner.spawn(temp_controller::temp_controller_task(
-        dht11_ctl, test2, p.PIN_13,
-    )));
+    let dht11_ctl = DHT11::new(pio1, p.PIN_15);
+    unwrap!(spawner.spawn(temp_monitor_task(dht11_ctl)));
+    info!("DHT11 initialized");
 
     loop {
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
@@ -206,8 +230,7 @@ async fn main(spawner: Spawner) {
                 }
             };
 
-            let temperature = SHARED_TEMP.load(Ordering::Relaxed);
-            let humidity = SHARED_HUMID.load(Ordering::Relaxed);
+            let (temperature, humidity) = dht11_tcp_reciever.get().await;
             let temperature_str = temperature_buffer.format(temperature);
             let humidity_str = humidity_buffer.format(humidity);
             output_string.clear();

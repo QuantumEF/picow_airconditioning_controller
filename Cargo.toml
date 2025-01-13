@@ -55,7 +55,7 @@ embedded-io = "0.6.1"
 ufmt = "0.2.0"
 nb = "1.1.0"
 embassy-net-driver-channel = "0.3.0"
-embassy-sync = "0.6.0"
+embassy-sync = "0.6.1"
 
 [profile.release]
 debug = 2

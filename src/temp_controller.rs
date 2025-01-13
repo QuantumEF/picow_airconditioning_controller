@@ -1,12 +1,6 @@
-use crate::dht11::DHT11;
-use core::sync::atomic::AtomicI8;
 use defmt::*;
-use embassy_rp::gpio::{Level, Output, Pin};
-use embassy_time::{Duration, Instant, Timer};
-use portable_atomic::Ordering;
-
-pub static SHARED_TEMP: AtomicI8 = AtomicI8::new(0);
-pub static SHARED_HUMID: AtomicI8 = AtomicI8::new(0);
+use embassy_rp::gpio::Output;
+use embassy_time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Format, Clone, Copy)]
 pub enum ControllerState {
@@ -16,36 +10,36 @@ pub enum ControllerState {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct TempController {
-    state: ControllerState,
-    threshold_temperature: i8,
+pub struct TempControllerConfig {
+    pub threshold_temperature: i8,
     pub minimum_runtime: Duration,
     pub cooldown_time: Duration,
 }
 
-impl TempController {
+pub struct TempController<'a> {
+    state: ControllerState,
+    relay_output: Output<'a>,
+    config: TempControllerConfig,
+}
+
+impl<'a> TempController<'a> {
     /// Creates a new temperature controller, starts off in Cooldown mode
-    pub fn new(
-        threshold_temperature: i8,
-        minimum_runtime: Duration,
-        cooldown_time: Duration,
-    ) -> TempController {
+    pub fn new(config: TempControllerConfig, relay_output: Output<'a>) -> TempController<'a> {
         TempController {
             state: ControllerState::Cooldown {
                 starttime: Instant::now(),
             },
-            threshold_temperature,
-            minimum_runtime,
-            cooldown_time,
+            relay_output,
+            config,
         }
     }
 
-    pub fn update(&mut self, current_temperature: i8) -> bool {
+    pub fn update(&mut self, current_temperature: i8) {
         let current_time = Instant::now();
 
-        match self.state {
+        let controller_state_change = match self.state {
             ControllerState::Idle => {
-                if current_temperature > self.threshold_temperature {
+                if current_temperature > self.config.threshold_temperature {
                     self.state = ControllerState::Running {
                         starttime: Instant::now(),
                     };
@@ -55,7 +49,7 @@ impl TempController {
                 }
             }
             ControllerState::Running { starttime } => {
-                if current_time > (starttime + self.minimum_runtime) {
+                if current_time > (starttime + self.config.minimum_runtime) {
                     self.state = ControllerState::Cooldown {
                         starttime: Instant::now(),
                     };
@@ -65,14 +59,26 @@ impl TempController {
                 }
             }
             ControllerState::Cooldown { starttime } => {
-                if current_time > (starttime + self.cooldown_time) {
+                if current_time > (starttime + self.config.cooldown_time) {
                     self.state = ControllerState::Idle;
                     true
                 } else {
                     false
                 }
             }
-        }
+        };
+
+        if controller_state_change && self.is_running() {
+            debug!("Setting Controller Relay");
+            self.relay_output.set_high();
+        } else if controller_state_change && self.is_cooldown() {
+            debug!("Unsetting Controller Relay");
+            self.relay_output.set_low();
+        };
+    }
+
+    pub fn update_config(&mut self, config: TempControllerConfig) {
+        self.config = config;
     }
 
     pub fn is_running(&self) -> bool {
@@ -89,39 +95,5 @@ impl TempController {
 
     pub fn get_state(&self) -> ControllerState {
         self.state
-    }
-}
-
-#[embassy_executor::task]
-pub async fn temp_controller_task(
-    mut dht11_ctl: DHT11,
-    controller: *mut TempController,
-    relay_pin: impl Pin,
-) -> ! {
-    let mut relay_output = Output::new(relay_pin, Level::Low);
-
-    // Safety: I don't care about race conditions.
-    let controller = unsafe {
-        controller
-            .as_mut()
-            .expect("This pointer should be initialized")
-    };
-
-    loop {
-        let (temperature, humidity) = dht11_ctl.get_temperature_humidity();
-
-        SHARED_TEMP.store(temperature, Ordering::Relaxed);
-        SHARED_HUMID.store(humidity, Ordering::Relaxed);
-
-        let controller_state_change = controller.update(temperature);
-        if controller_state_change && controller.is_running() {
-            debug!("Setting Controller Relay");
-            relay_output.set_high();
-        } else if controller_state_change && controller.is_cooldown() {
-            debug!("Unsetting Controller Relay");
-            relay_output.set_low();
-        }
-
-        Timer::after_secs(1).await
     }
 }
