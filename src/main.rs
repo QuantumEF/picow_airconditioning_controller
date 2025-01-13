@@ -4,8 +4,8 @@
 #![no_std]
 #![no_main]
 #![allow(async_fn_in_trait)]
-use core::sync::atomic::Ordering;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_sync::watch::Watch;
 use heapless::String;
 
@@ -31,9 +31,9 @@ use {defmt_rtt as _, panic_probe as _};
 mod dht11;
 mod temp_controller;
 use dht11::DHT11;
-use temp_controller::TempController;
-// mod uart_cli;
-// use uart_cli::uart_cli;
+use temp_controller::{ControllerState, TempController, TempControllerConfig};
+mod uart_cli;
+use uart_cli::uart_cli;
 
 bind_interrupts!(struct PIOIrqs {
     PIO0_IRQ_0 => PIOInterruptHandler<PIO0>;
@@ -48,6 +48,13 @@ const WIFI_NETWORK: &str = include_str!("wifi_network");
 const WIFI_PASSWORD: &str = include_str!("wifi_password");
 
 static DHT11_WATCH: Watch<CriticalSectionRawMutex, (i8, i8), 4> = Watch::new();
+
+static CONTROLLER_UPDATE_CONFIG: Signal<CriticalSectionRawMutex, TempControllerConfig> =
+    Signal::new();
+static CONTROLLER_CURRENT_STATUS: Signal<
+    CriticalSectionRawMutex,
+    (ControllerState, TempControllerConfig),
+> = Signal::new();
 
 #[embassy_executor::task]
 async fn wifi_task(
@@ -94,6 +101,12 @@ async fn temp_controller(relay_pin: impl Pin) {
     loop {
         let (temperature, _) = dht11_controller_reciever.get().await;
         controller.update(temperature);
+
+        CONTROLLER_CURRENT_STATUS.signal((controller.get_state(), controller.get_config()));
+
+        if let Some(new_config) = CONTROLLER_UPDATE_CONFIG.try_take() {
+            controller.update_config(new_config);
+        }
         Timer::after_secs(1).await;
     }
 }
@@ -166,7 +179,7 @@ async fn main(spawner: Spawner) {
         seed,
     ));
 
-    // unwrap!(spawner.spawn(uart_cli(uart, stack, test1)));
+    unwrap!(spawner.spawn(uart_cli(uart, stack)));
 
     unwrap!(spawner.spawn(net_task(stack)));
 

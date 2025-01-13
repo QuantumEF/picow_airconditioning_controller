@@ -81,6 +81,10 @@ impl<'a> TempController<'a> {
         self.config = config;
     }
 
+    pub fn get_config(&self) -> TempControllerConfig {
+        self.config
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(self.state, ControllerState::Running { starttime: _ })
     }

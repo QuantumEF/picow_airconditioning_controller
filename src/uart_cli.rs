@@ -1,4 +1,4 @@
-use core::{fmt::Write, sync::atomic::Ordering};
+use core::fmt::Write;
 use cyw43::NetDriver;
 use defmt::{debug, error};
 use embassy_net::Stack;
@@ -6,20 +6,29 @@ use embassy_rp::{
     peripherals::UART0,
     uart::{self, Async, Uart, UartTx},
 };
-use embassy_time::Instant;
+use embassy_time::{Duration, Instant};
 use embedded_cli::{
     cli::{CliBuilder, CliHandle},
     Command,
 };
 use embedded_io::ErrorType;
 
-use crate::temp_controller::{ControllerState, TempController, SHARED_HUMID, SHARED_TEMP};
+use crate::{
+    temp_controller::{ControllerState, TempControllerConfig},
+    CONTROLLER_CURRENT_STATUS, CONTROLLER_UPDATE_CONFIG, DHT11_WATCH,
+};
 
 #[derive(Debug, Command)]
 enum BaseCommand {
     Temp,
     Addr,
     Status,
+    GetConfig,
+    SetConfig {
+        set_temp: Option<i8>,
+        min_runtime_secs: Option<u64>,
+        min_cooldown_secs: Option<u64>,
+    },
 }
 
 /// Wrapper around usart so we can impl embedded_io::Write
@@ -46,7 +55,6 @@ impl embedded_io::Write for Writer {
 pub async fn uart_cli(
     uart: Uart<'static, UART0, Async>,
     network_stack: &'static Stack<NetDriver<'static>>,
-    controller: *mut TempController,
 ) -> ! {
     let (command_buffer, history_buffer) = unsafe {
         static mut COMMAND_BUFFER: [u8; 32] = [0; 32];
@@ -65,15 +73,14 @@ pub async fn uart_cli(
         .ok()
         .unwrap();
 
-    // Safety: I don't care about race conditions.
-    let controller = unsafe {
-        controller
-            .as_mut()
-            .expect("This pointer should be initialized")
-    };
+    let mut controller_state = CONTROLLER_CURRENT_STATUS.wait().await;
+
+    let mut dht11_monitor = DHT11_WATCH.receiver().unwrap();
 
     loop {
         let mut buffer = [0; 1];
+
+        let (temperature, humidity) = dht11_monitor.get().await;
         match rx.read(&mut buffer).await {
             Ok(()) => {
                 for byte in buffer {
@@ -85,8 +92,8 @@ pub async fn uart_cli(
                                     write!(
                                         cli.writer(),
                                         "Temp: {}°C\nHumidity: {}%",
-                                        SHARED_TEMP.load(Ordering::Relaxed),
-                                        SHARED_HUMID.load(Ordering::Relaxed)
+                                        temperature,
+                                        humidity,
                                     )
                                     .unwrap();
                                     Ok(())
@@ -101,12 +108,18 @@ pub async fn uart_cli(
                                     Ok(())
                                 }
                                 BaseCommand::Status => {
-                                    match controller.get_state() {
+                                    if let Some(changed_state) =
+                                        CONTROLLER_CURRENT_STATUS.try_take()
+                                    {
+                                        controller_state = changed_state;
+                                    };
+
+                                    match controller_state.0 {
                                         ControllerState::Idle => {
                                             write!(cli.writer(), "Status: Idle",).unwrap()
                                         }
                                         ControllerState::Running { starttime } => {
-                                            let time_remaining = controller.minimum_runtime
+                                            let time_remaining = controller_state.1.minimum_runtime
                                                 - (Instant::now() - starttime);
                                             write!(
                                                 cli.writer(),
@@ -116,7 +129,7 @@ pub async fn uart_cli(
                                             .unwrap()
                                         }
                                         ControllerState::Cooldown { starttime } => {
-                                            let time_remaining = controller.cooldown_time
+                                            let time_remaining = controller_state.1.cooldown_time
                                                 - (Instant::now() - starttime);
                                             write!(
                                                 cli.writer(),
@@ -126,6 +139,45 @@ pub async fn uart_cli(
                                             .unwrap()
                                         }
                                     }
+                                    Ok(())
+                                }
+                                BaseCommand::GetConfig => {
+                                    if let Some(changed_state) =
+                                    CONTROLLER_CURRENT_STATUS.try_take()
+                                {
+                                    controller_state = changed_state;
+                                };
+                                    let config = controller_state.1;
+                                    write!(
+                                        cli.writer(),
+                                        "Threshold Temp: {}°C\nMin Runtime: {}s\nCooldown Time: {}s",
+                                        config.threshold_temperature,
+                                        config.minimum_runtime.as_secs(),
+                                        config.cooldown_time.as_secs(),
+                                    )
+                                    .unwrap();
+                                    Ok(())
+                                }
+                                BaseCommand::SetConfig {
+                                    set_temp,
+                                    min_runtime_secs,
+                                    min_cooldown_secs,
+                                } => {
+                                    let new_config = TempControllerConfig {
+                                        threshold_temperature: set_temp
+                                            .unwrap_or(controller_state.1.threshold_temperature),
+                                        minimum_runtime: Duration::from_secs(
+                                            min_runtime_secs.unwrap_or(
+                                                controller_state.1.minimum_runtime.as_secs(),
+                                            ),
+                                        ),
+                                        cooldown_time: Duration::from_secs(
+                                            min_cooldown_secs.unwrap_or(
+                                                controller_state.1.cooldown_time.as_secs(),
+                                            ),
+                                        ),
+                                    };
+                                    CONTROLLER_UPDATE_CONFIG.signal(new_config);
                                     Ok(())
                                 }
                             },
